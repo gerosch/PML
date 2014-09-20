@@ -1,0 +1,183 @@
+---
+title:  Course Project - Practical Machine Learning
+author: Gero Schmidt
+date:   2014-09-19
+output: 
+  pdf_document:
+    highlight: default
+    fig_width: 4
+    fig_height: 3
+fontsize: 11pt
+geometry: margin=0.20in
+---
+Activity Quality Prediction using the Weight Lifting Exercises Dataset
+======================================================================
+
+**Gero Schmidt**
+
+**2014-09-19**
+
+## Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity which allows to quantify how much of a particular activity has been done. However, the quality or *way* of *how well* a particular activity was performed is rarely evaluated.
+
+In this project, we will use data from accelerometer sensors mounted on the *belt, forearm, arm*, and *dumbbell* of 6 participants who were performing *barbell* lifts *correctly* and *incorrectly* in 5 different ways. The goal is to *predict the manner* in which they did the exercise which is represented in the `classe` variable in the *training* set. This variable is omitted in the *test* set which is used for the evaluation and grading of the prediction algorithm as part of the Coursera Data Science Specialization: Practical Machine Learning course. This report is describing how the model was built, how cross validation was used, what the expected out-of-sample error is, and what choices have been made. The prediction model derived in this report is finally used to predict 20 test cases. 
+
+## Weight Lifting Exercises Dataset (WLE)
+
+The training dataset for this project is available at https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test dataset is available at https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+Both datasets need to be in the local working directory for this R markdown document to recreate the results. The data for this project is kindly provided by: 
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H.: *Qualitative Activity Recognition of Weight Lifting Exercises*. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13). Stuttgart, Germany: ACM SIGCHI, 2013 (http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201).
+
+The *Weight Lifting Exercises (WLE)* dataset is used to investigate *how well* an activity is being performed. Six participants were performing one set of 10 repetitions of the *Unilateral Dumbbell Biceps Curl* in *five* different fashions: 
+
+* Class A - exactly according to the specification, 
+* Class B - throwing the elbows to the front, 
+* Class C - lifting the dumbbell only halfway, 
+* Class D - lowering the dumbbell only halfway, 
+* Class E - throwing the hips to the front.
+
+*Class A* corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. 
+
+## Dataset Exploration
+
+First we load the dataset which is already splitted in a *training* and *test* dataset. 
+```{r}
+options(digits=7)
+library(caret)
+training<-read.csv("pml-training.csv")
+testing<-read.csv("pml-testing.csv")
+```
+
+Doing some preliminary investigation of the data we see that the training dataset comes with `r dim(training)[1]` observations of `r dim(training)[2]` variables. The outcome of the given classification problem is given by the variable `classe` in the last column which is a factor variable with 5 levels "A","B","C","D", and "E". Each class is sufficiently represented in the training dataset. The outcome variable `classe`, however, is not included in the test dataset where it is replaced by a variable `problem_id` for identification purposes of the 20 test cases for the submission of the prediction results. Both datasets are consistent in their variable names (except for the last column with the outcome `classe` in the training dataset and `problem_id` in test dataset) and contain a considerable number of *missing values* marked as NA.
+
+```{r}
+dim(training)
+str(training$classe)
+summary(training$classe)
+names(training)[names(testing)!=names(training)]
+names(testing)[names(testing)!=names(training)]
+sum(is.na(training))
+sum(is.na(testing))
+```
+
+##  Prediction Feature Extraction
+
+The goal of the prediction is to use data from sensors on the *belt, forearm, arm, and dumbell* to predict the *way* in which the *barbell lift* exercise is performed.
+The *outcome* of the prediction is classified in 5 classes of performing it correctly (class "A") and incorrectly (classes "B", "C", "D", and "E").
+
+For feature extraction we only use the variables which are related to the raw measurements from the sensors located on the belt, forearm, arm, and dumbell for the physical movement during the exercise. The sensor data can be represented in variables related to the *Euler angles (roll, pitch, and yaw)* and *accelerometer*, *gyroscope*, and *magnetometer* readings for each of the 4 sensor locations. These variables appear with the following name patterns in the dataset
+
+    gyros_xxx_x|y|z
+    accel_xxx_x|y|z
+    total_accel_xxx
+    magnet_xxx_x|y|z
+    roll|pitch|yaw_xxx
+
+which can easily be extracted from the training and test dataset, so that we can define *52 features* as *predictors* in our model and training dataset.
+
+```{r}
+predictorIdx<-c(grep("^accel",names(training)), grep("^gyros",names(training)),
+                grep("^magnet",names(training)), grep("^roll",names(training)),
+                grep("^pitch",names(training)), grep("^yaw",names(training)),
+                grep("^total",names(training)))
+trainPredSet<-training[,c(predictorIdx,160)]
+testPredSet<-testing[,c(predictorIdx,160)]
+length(predictorIdx)
+```
+
+A quick verification shows that the reduced training (`trainPredSet`) and test (`testPredSet`) datasets are consistent in their predictor variable names and have no missing values (NAs).
+
+```{r}
+sum(names(testing)[predictorIdx]!=names(training)[predictorIdx])
+sum(is.na(trainPredSet)) 
+sum(is.na(testPredSet)) 
+```
+
+The included *predictors* in the prediction model are listed below. None of them shows a *zero or near zero variance* which would help to identify candidates for further reducing the set of predictors.
+
+```{r}
+nearZeroVar(trainPredSet[,-53],saveMetric=TRUE)
+```
+
+In order to identify a set of major variables which may directly be related to a specific class of how an exercise is being performed, selected *plots* have been made. However, no specific patterns could easily be identified which would have allowed to further reduce the set of predictors to the ones most specific for the different classes. The plot below is just one example of various attempts to identify a pattern between the variables and classification.
+
+```{r, fig.width=6, fig.height=4}
+qplot(x=trainPredSet[,"accel_belt_x"],
+      y=trainPredSet[,"accel_arm_x"],color=trainPredSet$classe)
+```
+
+## Training Dataset and Cross-Validation
+
+In order to evaluate our prediction algorithm cross-validation is used. The training set is split into a cross-validation training set `cvTrain` (80%) and test set `cvTest` (20%). So we can train our model on the `cvTrain` dataset and test the accuracy of our prediction on the `cvTest` dataset in order to evaluate the influence of different training methods, predictor selections and predictor preprocessing methods. A high number of training examples (80%) is chosen to optimize for the training of the model.
+
+```{r}
+set.seed(125)
+inTrain<-createDataPartition(y=trainPredSet$classe,p=0.8,list=FALSE)
+cvTrain<-trainPredSet[inTrain,]
+cvTest<-trainPredSet[-inTrain,]
+```
+
+Furthermore we also use an automated cross-validation scheme within the `cvTrain` dataset during the model fit by using the `trainControl` function. Using the `repeatedcv` method instead of the default `boot` showed a slight increase in the accuracy of the model fit on the training set.
+
+```{r}
+fitCtrl<-trainControl(method="repeatedcv",number=10,repeats=10)
+```
+
+Though we decided to use *preprocessing* with *centering* and *scaling* it does not seem to make a big difference in the result. However, it is applied as a best practice because the variable value ranges of the predictors differ in two orders of magnitude.
+
+## Prediction Model Selection
+
+Following the overview of available prediction models to choose from in the `train` function of the `caret` package (http://topepo.github.io/caret/modelList.html) a small *selection* of different *classification* algorithms has been applied to the given dataset from which the `qda` model (**Quadratic Discriminant Analysis**) produced the highest prediction *accuracy* for the given *classification* problem with approximately 90% in a reasonable processing time. For example, the *Linear Discriminant Analysis* (`lda`) model only achieved a prediction accuracy of 70% and the untuned (default) *Random Forest* (`rf`) model did not finish processing within a reasonable time frame.
+
+The authors of the original paper that is cited above used a *random forest* model with *bagging* and a *sliding window* approach for the feature extraction and calculation, achieving an overall recognition performance of 98% with a window size of 2.5s. 
+
+```{r}
+set.seed(125)
+modFit<-train(classe ~ ., data=cvTrain, method="qda", preProcess=c("center", "scale"),
+              trControl = fitCtrl)
+print(modFit)
+```
+
+## Expected Out-of-Sample Error 
+
+We achieve a prediction *accuracy* of 89.9% on the *cross-validation training set* (`cvTrain`). Typically we can expect the accuray of the prediction model on new data like the cross-validation test set to be less than what has been achieved on the training dataset which was used to train the model.
+
+```{r}
+ptrain<-predict(modFit,newdata=cvTrain)
+equalPredTrain<-(ptrain==cvTrain$classe)
+print(sum(equalPredTrain)/length(equalPredTrain))
+confusionMatrix(data=ptrain,reference=cvTrain$classe)
+```
+
+Using the *cross-validation test set* (`cvTest`) we can evaluate the accuracy and estimate the out-of-sample error rate of the prediction model. We achieve a prediction *accuracy* of 89.0% on the cross-validation test set which has not been used to train the model.
+
+```{r}
+ptest<-predict(modFit,newdata=cvTest)
+equalPredTest<-(ptest==cvTest$classe)
+print(sum(equalPredTest)/length(equalPredTest))
+confusionMatrix(data=ptest,reference=cvTest$classe)
+```
+
+Given the results achieved on the cross-validation test set `cvTest` with 89.0% accuracy we can estimate the *out-of-sample error rate* on new data like the given test dataset (`testing`) to be around 11% (percentage of misclassified cases).
+
+## Prediction Results on Test Dataset
+
+When using the described prediction model to predict the 20 different test cases from the original test dataset `testing` we obtain the following predictions:
+
+```{r}
+testPrediction<-predict(modFit,newdata=testing)
+print(rbind(testing[1:20,160],as.character(testPrediction)))
+```
+
+The *ground truth* for our predictions on the test dataset can be verified through the results returned from the *Prediction Assignment Submission* on Coursera.org. It showed that the predictions were correct in 19 out of the 20 test cases giving a prediction accuracy of the prediction algorithm on the test dataset of 19/20 = `r round(19/20,2)`% which is higher than on the cross-validation training and test sets. The *out-of-sample error rate* on the test set is 1-(19/20)=5% which is even less than on the training and cross-validation set. Typically it is expected that the out-of-sample error rate is higher on new data like the test data set. In this case it  might be explained by the small number of test cases and/or a limited selection of distinct test cases in the test dataset for the exercise.
+
+## Summary
+
+We show that we can achieve a *high classification accuracy of around 90%* (as seen on the cross validation test set) using just the *raw physical sensor data* and a classifier based on a standard and fast to train **Quadratic Discriminant Analysis** model (`qda`) without using an additional sliding window approach to preprocess the raw data and calculate additional features like the mean, variance, standard deviation, max, min, amplitude, etc. over a given time slice.
+
+However the authors of the cited paper above show that a *random forest* model with *bagging* and a *sliding window* approach for the feature extraction can achieve an overall recognition performance of 98% with a chosen window size of 2.5s on the given dataset. 

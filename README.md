@@ -1,0 +1,1 @@
+This is the course project for the 'Practical Machine Learning' course of the Data Science Specialization on Coursera.org.
